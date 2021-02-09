@@ -31,6 +31,7 @@ const NAME = 15;
 const BLANK = 17;
 
 var path = require('path');
+var ps = require('ps-node');
 const Store = require('electron-store');
 const { exec } = require("child_process");
 const { dialog } = require('electron')
@@ -47,7 +48,6 @@ var available = [];
 var maxShells = 5;
 
 var exptMap = {};
-var pausedExpts = [];
 var activeIp = '';
 
 /* Generate browser window for an experiment */
@@ -81,7 +81,6 @@ function runPyshells() {
         }
     }
     mainWindow.webContents.send('running-expts', Object.keys(exptMap));
-    mainWindow.webContents.send('paused-expts', pausedExpts);
 }
 
 /* Get array of running experiments from exptMap. Store path and pid information only. */
@@ -101,9 +100,26 @@ function storeRunningExpts() {
 
 /* Handle killing and relaunching experiments not connected to application. */
 function killExpts(relaunch) {
-  var foundPIDs = [];
   for (var i = 0; i < store.get('running_expts').length; i++) {
-    foundPIDs.push(store.get('running_expts')[i].pid);
+    ps.lookup({pid: store.get('running_expts')[i].pid}, function(err, resultList) {
+      if (err) {
+        throw new Error(err);
+      }
+      var process = resultList[0];
+      for (var i = 0; i < process.arguments.length; i++) {
+        if (process.arguments[i].includes('eVOLVER')) {
+          ps.kill(process.pid, function(err) {
+            if (err) {
+              throw new Error(err);
+            }
+            else {
+              console.log('Process %s has been killed!', process.pid);
+            }
+          });
+          break;
+        }
+      }
+    });
     if (relaunch) {
       console.log("Relaunching")
       tasks.push(['start', {
@@ -112,18 +128,6 @@ function killExpts(relaunch) {
       ]);
     };
   };
-  console.log(`kill ${foundPIDs.join(' ')}`);
-  exec(`kill ${foundPIDs.join(' ')}`, (error, stdout, stderr) => {
-      if (error) {
-          console.log(`error: ${error.message}`);
-          return;
-      }
-      if (stderr) {
-          console.log(`stderr: ${stderr}`);
-          return;
-      }
-      console.log(`stdout: ${stdout}`);
-  });
   store.set('running_expts', []);
   if (relaunch) {
     runPyshells();
@@ -147,47 +151,17 @@ ipcMain.on('send-message', (event, arg) => {
    recipientShell.send(arg[1], arg[2]);
 });
 
-ipcMain.on('pause-script', (event, arg) => {
-   var recipientShell = exptMap[arg].browser_contents;
-   recipientShell.send('pause-script');
-   pausedExpts.push(arg);
-   mainWindow.webContents.send('running-expts',Object.keys(exptMap));
-   mainWindow.webContents.send('paused-expts', pausedExpts);
-});
-
-ipcMain.on('continue-script', (event, arg) => {
-   var recipientShell = exptMap[arg].browser_contents;
-   recipientShell.send('continue-script');
-   for (var i = 0; i < pausedExpts.length; i++) {
-       if (pausedExpts[i] === arg) {
-           pausedExpts.splice(i, 1);
-       }
-   }
-   mainWindow.webContents.send('running-expts',Object.keys(exptMap));
-   mainWindow.webContents.send('paused-expts', pausedExpts);
-});
-
 ipcMain.on('stop-script', (event, arg) => {
    var recipientShell = exptMap[arg].browser_contents;
    recipientShell.send('stop-script');
    delete exptMap[arg];
    storeRunningExpts();
 
-   for (var i = 0; i < pausedExpts.length; i++) {
-       if (pausedExpts[i] === arg) {
-           pausedExpts.splice(i, 1);
-       }
-   }
    mainWindow.webContents.send('running-expts',Object.keys(exptMap));
-   mainWindow.webContents.send('paused-expts', pausedExpts);
 });
 
 ipcMain.on('running-expts', (event, arg) => {
    mainWindow.webContents.send('running-expts',Object.keys(exptMap));
-});
-
-ipcMain.on('paused-expts', (event, arg) => {
-   mainWindow.webContents.send('paused-expts', pausedExpts);
 });
 
 ipcMain.on('ready', (event, arg) => {
